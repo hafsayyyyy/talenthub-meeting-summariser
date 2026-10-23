@@ -1,6 +1,8 @@
-
 .venv/
+.env
 __pycache__/
 .pytest_cache/
-.env
-*.pyc
+*.py[cod]
+talenthub.db
+test_meetings.db
+app_backup.py

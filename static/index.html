@@ -1,0 +1,201 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TalentHub | Meeting Summariser</title>
+    <meta name="description" content="Recruiter dashboard for summarising interviews and reviewing meeting summaries.">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <header class="topbar">
+        <div class="brand">
+            <div class="brand-icon">T</div>
+            <div>
+                <h1>TalentHub</h1>
+                <p>Recruitment Workspace</p>
+            </div>
+        </div>
+        <span class="status-badge">
+            <span class="status-dot"></span>
+            AI Meeting Assistant
+        </span>
+    </header>
+
+    <main class="container">
+        <section class="welcome">
+            <p class="eyebrow">RECRUITER DASHBOARD</p>
+            <h2>Meeting Summariser</h2>
+            <p class="subtitle">
+                Turn interview transcripts into clear summaries and review
+                important hiring details in one place.
+            </p>
+        </section>
+
+        <div class="dashboard-grid">
+            <section class="panel upload-panel">
+                <div class="section-heading">
+                    <div>
+                        <h3>Upload meeting transcript</h3>
+                        <p>Upload a text file or enter the transcript below.</p>
+                    </div>
+                    <span class="step-number">01</span>
+                </div>
+
+                <form id="summaryForm">
+                    <label for="meetingTitle">Meeting title</label>
+                    <input
+                        type="text"
+                        id="meetingTitle"
+                        name="meetingTitle"
+                        placeholder="e.g. Software Engineer Interview"
+                    >
+
+                    <label for="transcriptFile">Transcript file</label>
+                    <div class="drop-zone" id="dropZone">
+                        <div class="upload-icon">↑</div>
+                        <p><strong>Choose a file</strong> or drag it here</p>
+                        <p class="file-help">Supported format: .txt</p>
+                        <input
+                            type="file"
+                            id="transcriptFile"
+                            accept=".txt,text/plain"
+                            hidden
+                        >
+                        <button type="button" class="secondary-button" id="browseButton">
+                            Browse files
+                        </button>
+                        <p id="fileName" class="file-name">No file selected</p>
+                    </div>
+
+                    <div class="divider"><span>OR</span></div>
+
+                    <label for="transcript">Paste transcript</label>
+                    <textarea
+                        id="transcript"
+                        name="transcript"
+                        rows="8"
+                        placeholder="Paste your interview or meeting transcript here..."
+                    ></textarea>
+
+                    <p class="privacy-note">
+                        <span>🔒</span>
+                        Review sensitive information before submitting a transcript.
+                    </p>
+
+                    <button type="submit" class="primary-button" id="summariseButton">
+                        <span>✦</span> Generate Summary
+                    </button>
+
+                    <div id="loading" class="loading hidden" role="status">
+                        <span class="spinner"></span>
+                        <span>Generating your meeting summary...</span>
+                    </div>
+
+                    <p id="errorMessage" class="error-message hidden" role="alert"></p>
+                </form>
+            </section>
+
+            <section class="panel result-panel">
+                <div class="section-heading">
+                    <div>
+                        <h3>Meeting summary</h3>
+                        <p>Your AI-generated summary will appear here.</p>
+                    </div>
+                    <span class="step-number">02</span>
+                </div>
+
+                <div id="emptyState" class="empty-state">
+                    <div class="document-icon">▤</div>
+                    <h4>No summary yet</h4>
+                    <p>
+                        Upload or paste a transcript, then select
+                        <strong>Generate Summary</strong> to see the results.
+                    </p>
+                </div>
+
+                <div id="summaryResult" class="summary-result hidden">
+                    <div class="summary-meta">
+                        <span class="result-label">GENERATED SUMMARY</span>
+                        <span id="summaryTimestamp"></span>
+                    </div>
+                    <h4 id="resultTitle">Meeting Notes</h4>
+                    <ul id="summaryList" class="summary-list"></ul>
+                    <p id="meetingId" class="meeting-id"></p>
+                </div>
+
+                <div class="checklist">
+                    <div class="section-heading checklist-heading">
+                        <div>
+                            <h3>Quality review checklist</h3>
+                            <p>Review the summary before using it.</p>
+                        </div>
+                    </div>
+
+                    <div class="progress-track">
+                        <div id="progressBar" class="progress-bar"></div>
+                    </div>
+                    <p id="progressText" class="progress-text">0 of 4 checks completed</p>
+
+                    <div class="check-item">
+                        <label>
+                            <input type="checkbox" class="quality-check" id="keyTopics">
+                            <span class="custom-check"></span>
+                            <span>
+                                <strong>Key topics included</strong>
+                                <small>Important discussion points are covered.</small>
+                            </span>
+                        </label>
+                    </div>
+
+                    <div class="check-item">
+                        <label>
+                            <input type="checkbox" class="quality-check" id="accuracy">
+                            <span class="custom-check"></span>
+                            <span>
+                                <strong>Accuracy verified</strong>
+                                <small>Details match the original transcript.</small>
+                            </span>
+                        </label>
+                    </div>
+
+                    <div class="check-item">
+                        <label>
+                            <input type="checkbox" class="quality-check" id="privacy">
+                            <span class="custom-check"></span>
+                            <span>
+                                <strong>Privacy reviewed</strong>
+                                <small>Sensitive information has been checked.</small>
+                            </span>
+                        </label>
+                    </div>
+
+                    <div class="check-item">
+                        <label>
+                            <input type="checkbox" class="quality-check" id="actions">
+                            <span class="custom-check"></span>
+                            <span>
+                                <strong>Action items identified</strong>
+                                <small>Next steps and follow-ups are clear.</small>
+                            </span>
+                        </label>
+                    </div>
+
+                    <button type="button" id="saveChecklist" class="secondary-button save-button">
+                        Save Checklist
+                    </button>
+                    <p id="saveMessage" class="save-message" aria-live="polite"></p>
+                </div>
+            </section>
+        </div>
+
+        <footer class="footer">
+            <p>TalentHub Meeting Summariser <span>•</span> Recruiter Workspace</p>
+            <p>Always verify AI-generated summaries before making hiring decisions.</p>
+        </footer>
+    </main>
+
+    <script src="/static/script.js"></script>
+</body>
+</html>

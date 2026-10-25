@@ -8,24 +8,47 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from jsonschema import validate, ValidationError
 from openai import OpenAI
 from pydantic import BaseModel
 
+# Load environment variables from .env
 load_dotenv()
 
+# Application paths
+BASE_DIR = Path(__file__).resolve().parent
+STATIC_DIR = BASE_DIR / "static"
+
+# Database path
+DATABASE_PATH = Path(
+    os.getenv("DATABASE_PATH", str(BASE_DIR / "talenthub.db"))
+)
+
+# Create FastAPI application
 app = FastAPI(
     title="TalentHub Meeting Summariser API",
     description="API for summarising meeting transcripts.",
     version="1.0.0",
 )
 
-DATABASE_PATH = os.getenv("DATABASE_PATH", "talenthub.db")
+# Serve frontend CSS and JavaScript files
+app.mount(
+    "/static",
+    StaticFiles(directory=str(STATIC_DIR),
+                 check_dir=False),
+    name="static",
+)
 
+# JSON schema for validating AI output
 SUMMARY_SCHEMA = {
     "type": "object",
     "properties": {
-        "summary": {"type": "string", "minLength": 1}
+        "summary": {
+            "type": "string",
+            "minLength": 1,
+        }
     },
     "required": ["summary"],
     "additionalProperties": False,
@@ -38,12 +61,14 @@ class SummaryResponse(BaseModel):
     timestamp: str
 
 
+# Database connection
 def get_connection():
-    connection = sqlite3.connect(DATABASE_PATH)
+    connection = sqlite3.connect(str(DATABASE_PATH))
     connection.row_factory = sqlite3.Row
     return connection
 
 
+# Create database table if it does not exist
 def initialise_database():
     with get_connection() as connection:
         connection.execute(
@@ -61,29 +86,40 @@ def initialise_database():
 initialise_database()
 
 
+# Frontend dashboard
 @app.get("/")
 def home():
-    return {
-        "message": "TalentHub Meeting Summariser API is running",
-        "docs": "/docs",
-    }
+    index_file = STATIC_DIR / "index.html"
+
+    if not index_file.is_file():
+        raise HTTPException(
+            status_code=500,
+            detail="Dashboard file static/index.html was not found.",
+        )
+
+    return FileResponse(index_file)
 
 
+# Health check
 @app.get("/health")
 def health():
     return {"status": "healthy"}
 
 
+# OpenAI client
 def get_client():
     api_key = os.getenv("OPENAI_API_KEY")
+
     if not api_key:
         raise HTTPException(
             status_code=503,
             detail="OpenAI API key is not configured.",
         )
+
     return OpenAI(api_key=api_key)
 
 
+# Transcribe an MP3 or WAV audio file
 def transcribe_audio(client, audio: UploadFile) -> str:
     filename = audio.filename or ""
     extension = Path(filename).suffix.lower()
@@ -95,6 +131,7 @@ def transcribe_audio(client, audio: UploadFile) -> str:
         )
 
     audio_bytes = audio.file.read()
+
     if not audio_bytes:
         raise HTTPException(
             status_code=400,
@@ -105,6 +142,7 @@ def transcribe_audio(client, audio: UploadFile) -> str:
         model="whisper-1",
         file=(filename, audio_bytes),
     )
+
     transcript = result.text.strip()
 
     if not transcript:
@@ -116,6 +154,7 @@ def transcribe_audio(client, audio: UploadFile) -> str:
     return transcript
 
 
+# Generate and validate the meeting summary
 def generate_summary(client, transcript: str) -> str:
     response = client.chat.completions.create(
         model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
@@ -131,12 +170,16 @@ def generate_summary(client, transcript: str) -> str:
                     '{"summary": "• First point\\n• Second point"}'
                 ),
             },
-            {"role": "user", "content": transcript},
+            {
+                "role": "user",
+                "content": transcript,
+            },
         ],
         temperature=0.3,
     )
 
     content = response.choices[0].message.content
+
     if not content:
         raise HTTPException(
             status_code=502,
@@ -146,6 +189,7 @@ def generate_summary(client, transcript: str) -> str:
     try:
         data = json.loads(content)
         validate(instance=data, schema=SUMMARY_SCHEMA)
+
     except (json.JSONDecodeError, ValidationError):
         raise HTTPException(
             status_code=502,
@@ -153,20 +197,24 @@ def generate_summary(client, transcript: str) -> str:
         )
 
     summary = data["summary"].strip()
+
     if not summary:
         raise HTTPException(
             status_code=502,
             detail="The summary was empty.",
         )
+
     return summary
 
 
+# Main summarisation endpoint
 @app.post("/summarise", response_model=SummaryResponse)
 def summarise_meeting(
     transcript: str | None = Form(default=None),
     audio: UploadFile | None = File(default=None),
 ):
     transcript = transcript.strip() if transcript else None
+
     if not transcript:
         transcript = None
 
@@ -188,15 +236,17 @@ def summarise_meeting(
             detail="The uploaded audio filename is missing.",
         )
 
-    client = get_client()
-
     try:
+        client = get_client()
+
         if audio:
             transcript = transcribe_audio(client, audio)
 
         summary = generate_summary(client, transcript)
+
         timestamp = datetime.now(timezone.utc).isoformat()
 
+        # Save original transcript and generated summary to SQLite
         with get_connection() as connection:
             cursor = connection.execute(
                 """
@@ -205,6 +255,7 @@ def summarise_meeting(
                 """,
                 (transcript, summary, timestamp),
             )
+
             meeting_id = cursor.lastrowid
 
         return SummaryResponse(
@@ -215,12 +266,15 @@ def summarise_meeting(
 
     except HTTPException:
         raise
+
     except Exception:
         logging.exception("Meeting summarisation failed.")
+
         raise HTTPException(
             status_code=502,
             detail="Unable to process the meeting at this time.",
         )
+
     finally:
         if audio:
             audio.file.close()

@@ -12,7 +12,13 @@ def test_health():
     response = client.get("/health")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "healthy"}
+
+    data = response.json()
+
+    assert data["status"] == "healthy"
+    assert data["database"] == "connected"
+    assert data["ai_provider"] == "ollama"
+    assert data["model"] == "llama2"
 
 
 def test_home():
@@ -35,10 +41,9 @@ def test_summarise_saves_meeting(monkeypatch, tmp_path):
     app.initialise_database()
 
     # Disable demo mode for this test.
-    # The mocked function below means no OpenAI API call is made.
     monkeypatch.setenv("DEMO_MODE", "false")
 
-    # Mock the OpenAI client.
+    # Mock the client to avoid making an external API call.
     monkeypatch.setattr(
         app,
         "get_client",

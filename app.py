@@ -3,6 +3,8 @@ import json
 import logging
 import os
 import sqlite3
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -13,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from jsonschema import validate, ValidationError
 from openai import OpenAI
 from pydantic import BaseModel
+
 
 # --------------------------------------------------
 # Configuration
@@ -28,13 +31,21 @@ DATABASE_PATH = Path(
     os.getenv("DATABASE_PATH", str(BASE_DIR / "talenthub.db"))
 )
 
+OLLAMA_URL = os.getenv(
+    "OLLAMA_URL",
+    "http://127.0.0.1:11434/api/generate",
+)
+
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama2")
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
 app = FastAPI(
     title="TalentHub Meeting Summariser API",
-    description="API for summarising meeting transcripts.",
-    version="1.0.0",
+    description="API for summarising meeting transcripts using local AI.",
+    version="1.1.0",
 )
 
 app.mount(
@@ -42,6 +53,7 @@ app.mount(
     StaticFiles(directory=str(STATIC_DIR), check_dir=False),
     name="static",
 )
+
 
 # --------------------------------------------------
 # Summary JSON schema
@@ -110,7 +122,7 @@ def save_meeting(transcript: str, summary: str):
 
 
 # --------------------------------------------------
-# Dashboard and health check
+# Dashboard
 # --------------------------------------------------
 
 @app.get("/")
@@ -126,13 +138,33 @@ def home():
     return FileResponse(index_file)
 
 
+# --------------------------------------------------
+# Health check
+# --------------------------------------------------
+
 @app.get("/health")
 def health():
-    return {"status": "healthy"}
+    try:
+        with get_connection() as connection:
+            connection.execute("SELECT 1")
+
+        return {
+            "status": "healthy",
+            "database": "connected",
+            "ai_provider": "ollama",
+            "model": OLLAMA_MODEL,
+        }
+
+    except sqlite3.Error:
+        logger.exception("Database health check failed.")
+        raise HTTPException(
+            status_code=503,
+            detail="Database connection failed.",
+        )
 
 
 # --------------------------------------------------
-# OpenAI client
+# OpenAI client for audio transcription only
 # --------------------------------------------------
 
 def get_client():
@@ -141,28 +173,29 @@ def get_client():
     if not api_key or api_key == "your_actual_api_key_here":
         raise HTTPException(
             status_code=503,
-            detail="OpenAI API key is missing from the .env file.",
+            detail=(
+                "Audio transcription requires a valid OpenAI API key "
+                "and available API credits."
+            ),
         )
 
     try:
         return OpenAI(api_key=api_key)
-    except Exception:
+
+    except Exception as exc:
         logger.exception("Could not initialise OpenAI client.")
         raise HTTPException(
             status_code=503,
-            detail="Could not initialise the AI service.",
-        )
+            detail="Could not initialise the audio transcription service.",
+        ) from exc
 
 
 # --------------------------------------------------
-# Demo summary: no OpenAI API credits required
+# Demo summary (optional)
 # --------------------------------------------------
 
 def generate_demo_summary(transcript: str) -> str:
-    """
-    Create a simple demo output without using an AI service.
-    The output is clearly labelled as a demo.
-    """
+    """Generate a clearly labelled non-AI demo summary."""
 
     text = transcript.strip()
 
@@ -178,78 +211,127 @@ def generate_demo_summary(transcript: str) -> str:
         if part.strip()
     ]
 
-    points = sentences[:5]
-
-    if not points:
-        points = [text]
+    if not sentences:
+        sentences = [text]
 
     bullet_points = "\n".join(
-        f"• {point}" for point in points
+        f"- {point}" for point in sentences[:5]
     )
 
     return (
-        "DEMO MODE — This is not an AI-generated summary.\n"
+        "DEMO MODE - This is not an AI-generated summary.\n"
         + bullet_points
     )
 
 
 # --------------------------------------------------
-# Actual AI summary: requires OpenAI API credits
+# Local AI summary using Ollama
 # --------------------------------------------------
 
 def generate_summary(client, transcript: str) -> str:
-    response = client.chat.completions.create(
-        model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-        response_format={"type": "json_object"},
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "Summarise the meeting transcript as concise bullet "
-                    "points. Include key discussion points, decisions, "
-                    "and action items when available. Do not invent "
-                    "information. Return valid JSON in this format: "
-                    '{"summary": "First point\\nSecond point"}'
-                ),
-            },
-            {
-                "role": "user",
-                "content": transcript,
-            },
-        ],
-        temperature=0.3,
+    """Generate and validate an AI summary using local Ollama."""
+
+    if not transcript or not transcript.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="The transcript is empty.",
+        )
+
+    prompt = f"""
+You are a professional meeting summarisation assistant.
+
+Summarise the meeting transcript accurately and concisely.
+Include the following when available:
+1. Key discussion points
+2. Decisions made
+3. Action items and responsible people
+4. Deadlines
+
+Do not invent facts or action items.
+Return ONLY a valid JSON object with exactly this structure:
+{{"summary": "- First key point\\n- Second key point"}}
+
+Meeting transcript:
+{transcript}
+"""
+
+    payload = {
+        "model": OLLAMA_MODEL,
+        "prompt": prompt,
+        "stream": False,
+        "format": "json",
+        "options": {
+            "temperature": 0.2,
+        },
+    }
+
+    request = urllib.request.Request(
+        OLLAMA_URL,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
     )
 
-    content = response.choices[0].message.content
-
-    if not content:
-        raise HTTPException(
-            status_code=502,
-            detail="The AI service returned no summary.",
-        )
-
     try:
+        with urllib.request.urlopen(request, timeout=180) as response:
+            result = json.loads(
+                response.read().decode("utf-8")
+            )
+
+        content = result.get("response", "").strip()
+
+        if not content:
+            raise HTTPException(
+                status_code=502,
+                detail="Ollama returned an empty response.",
+            )
+
         data = json.loads(content)
         validate(instance=data, schema=SUMMARY_SCHEMA)
-    except (json.JSONDecodeError, ValidationError):
+
+        summary = data["summary"].strip()
+
+        if not summary:
+            raise HTTPException(
+                status_code=502,
+                detail="The AI returned an empty summary.",
+            )
+
+        return summary
+
+    except HTTPException:
+        raise
+
+    except urllib.error.URLError as exc:
+        logger.exception("Could not connect to Ollama.")
+
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Could not connect to Ollama. Make sure Ollama is "
+                "running and the configured model is installed."
+            ),
+        ) from exc
+
+    except (json.JSONDecodeError, ValidationError) as exc:
+        logger.exception("Ollama returned invalid summary JSON.")
+
         raise HTTPException(
             status_code=502,
-            detail="The AI returned invalid summary JSON.",
-        )
+            detail="Ollama returned an invalid summary format.",
+        ) from exc
 
-    summary = data["summary"].strip()
+    except TimeoutError as exc:
+        logger.exception("Ollama request timed out.")
 
-    if not summary:
         raise HTTPException(
-            status_code=502,
-            detail="The summary was empty.",
-        )
-
-    return summary
+            status_code=504,
+            detail="Ollama took too long to generate the summary.",
+        ) from exc
 
 
 # --------------------------------------------------
-# MP3/WAV transcription: requires OpenAI API credits
+# Audio transcription using OpenAI Whisper
 # --------------------------------------------------
 
 def transcribe_audio(client, audio: UploadFile) -> str:
@@ -320,8 +402,8 @@ def summarise_meeting(
             os.getenv("DEMO_MODE", "false").strip().lower() == "true"
         )
 
-        # Audio transcription requires the real OpenAI service.
         if audio:
+            # Audio still requires OpenAI Whisper.
             client = get_client()
             transcript = transcribe_audio(client, audio)
 
@@ -331,14 +413,16 @@ def summarise_meeting(
                 detail="No transcript was provided.",
             )
 
-        # Keep demo mode separate from actual AI mode.
         if demo_mode:
             summary = generate_demo_summary(transcript)
         else:
-            client = get_client()
-            summary = generate_summary(client, transcript)
+            # Text summaries use local Ollama; no API key is needed.
+            summary = generate_summary(None, transcript)
 
-        meeting_id, timestamp = save_meeting(transcript, summary)
+        meeting_id, timestamp = save_meeting(
+            transcript,
+            summary,
+        )
 
         return SummaryResponse(
             meeting_id=meeting_id,
@@ -349,15 +433,16 @@ def summarise_meeting(
     except HTTPException:
         raise
 
-    except Exception:
+    except Exception as exc:
         logger.exception("Meeting summarisation failed.")
+
         raise HTTPException(
             status_code=502,
             detail=(
                 "Unable to process the meeting. Check the server "
                 "terminal for the underlying error."
             ),
-        )
+        ) from exc
 
     finally:
         if audio:
@@ -365,20 +450,29 @@ def summarise_meeting(
 
 
 # --------------------------------------------------
-# GET /meetings: view saved meetings
+# GET /meetings
 # --------------------------------------------------
 
 @app.get("/meetings")
 def list_meetings():
-    with get_connection() as connection:
-        rows = connection.execute(
-            """
-            SELECT id, transcript, summary, timestamp
-            FROM meetings
-            ORDER BY id DESC
-            """
-        ).fetchall()
+    try:
+        with get_connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, transcript, summary, timestamp
+                FROM meetings
+                ORDER BY id DESC
+                """
+            ).fetchall()
 
-    return {
-        "meetings": [dict(row) for row in rows]
-    }
+        return {
+            "meetings": [dict(row) for row in rows]
+        }
+
+    except sqlite3.Error as exc:
+        logger.exception("Could not retrieve saved meetings.")
+
+        raise HTTPException(
+            status_code=500,
+            detail="Could not retrieve meetings from the database.",
+        ) from exc

@@ -1,6 +1,5 @@
 
-import sqlite3
-
+import pytest
 from fastapi.testclient import TestClient
 
 import app
@@ -9,34 +8,37 @@ import app
 client = TestClient(app.app)
 
 
+def test_health():
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "healthy"}
+
+
 def test_home():
     response = client.get("/")
 
     assert response.status_code == 200
 
 
-def test_health():
-    response = client.get("/health")
-
-    assert response.status_code == 200
-    assert response.json()["status"] == "healthy"
-
-
-def test_summarise_requires_transcript_or_audio():
+def test_summarise_requires_input():
     response = client.post("/summarise", data={})
 
-    # FastAPI may return 400 or 422 for an empty request.
-    assert response.status_code in (400, 422)
+    assert response.status_code == 422
 
 
 def test_summarise_saves_meeting(monkeypatch, tmp_path):
-    # Use a temporary database so the real project database is untouched.
+    # Use a temporary database for this test.
     test_db = str(tmp_path / "test_meetings.db")
 
     monkeypatch.setattr(app, "DATABASE_PATH", test_db)
     app.initialise_database()
 
-    # Avoid calling the real OpenAI API.
+    # Disable demo mode for this test.
+    # The mocked function below means no OpenAI API call is made.
+    monkeypatch.setenv("DEMO_MODE", "false")
+
+    # Mock the OpenAI client.
     monkeypatch.setattr(
         app,
         "get_client",
@@ -45,6 +47,7 @@ def test_summarise_saves_meeting(monkeypatch, tmp_path):
 
     expected_summary = "- Ali will complete the design by Monday."
 
+    # Mock AI summary generation.
     monkeypatch.setattr(
         app,
         "generate_summary",
@@ -69,13 +72,13 @@ def test_summarise_saves_meeting(monkeypatch, tmp_path):
     assert result["summary"] == expected_summary
     assert result["timestamp"]
 
-    # Confirm the transcript and summary were stored in SQLite.
-    with sqlite3.connect(test_db) as connection:
-        row = connection.execute(
+    # Confirm the meeting was stored in SQLite.
+    with app.get_connection() as connection:
+        saved_meeting = connection.execute(
             "SELECT transcript, summary FROM meetings WHERE id = ?",
             (result["meeting_id"],),
         ).fetchone()
 
-    assert row is not None
-    assert row[0] == transcript_text
-    assert row[1] == expected_summary
+    assert saved_meeting is not None
+    assert saved_meeting["transcript"] == transcript_text
+    assert saved_meeting["summary"] == expected_summary

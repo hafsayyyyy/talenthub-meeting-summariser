@@ -14,34 +14,39 @@ from jsonschema import validate, ValidationError
 from openai import OpenAI
 from pydantic import BaseModel
 
-# Load environment variables from .env
-load_dotenv()
+# --------------------------------------------------
+# Configuration
+# --------------------------------------------------
 
-# Application paths
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
+ENV_FILE = BASE_DIR / ".env"
 
-# Database path
+load_dotenv(dotenv_path=ENV_FILE, override=True)
+
 DATABASE_PATH = Path(
     os.getenv("DATABASE_PATH", str(BASE_DIR / "talenthub.db"))
 )
 
-# Create FastAPI application
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 app = FastAPI(
     title="TalentHub Meeting Summariser API",
     description="API for summarising meeting transcripts.",
     version="1.0.0",
 )
 
-# Serve frontend CSS and JavaScript files
 app.mount(
     "/static",
-    StaticFiles(directory=str(STATIC_DIR),
-                 check_dir=False),
+    StaticFiles(directory=str(STATIC_DIR), check_dir=False),
     name="static",
 )
 
-# JSON schema for validating AI output
+# --------------------------------------------------
+# Summary JSON schema
+# --------------------------------------------------
+
 SUMMARY_SCHEMA = {
     "type": "object",
     "properties": {
@@ -61,14 +66,16 @@ class SummaryResponse(BaseModel):
     timestamp: str
 
 
-# Database connection
+# --------------------------------------------------
+# SQLite database
+# --------------------------------------------------
+
 def get_connection():
     connection = sqlite3.connect(str(DATABASE_PATH))
     connection.row_factory = sqlite3.Row
     return connection
 
 
-# Create database table if it does not exist
 def initialise_database():
     with get_connection() as connection:
         connection.execute(
@@ -86,7 +93,26 @@ def initialise_database():
 initialise_database()
 
 
-# Frontend dashboard
+def save_meeting(transcript: str, summary: str):
+    timestamp = datetime.now(timezone.utc).isoformat()
+
+    with get_connection() as connection:
+        cursor = connection.execute(
+            """
+            INSERT INTO meetings (transcript, summary, timestamp)
+            VALUES (?, ?, ?)
+            """,
+            (transcript, summary, timestamp),
+        )
+        meeting_id = cursor.lastrowid
+
+    return meeting_id, timestamp
+
+
+# --------------------------------------------------
+# Dashboard and health check
+# --------------------------------------------------
+
 @app.get("/")
 def home():
     index_file = STATIC_DIR / "index.html"
@@ -100,26 +126,132 @@ def home():
     return FileResponse(index_file)
 
 
-# Health check
 @app.get("/health")
 def health():
     return {"status": "healthy"}
 
 
+# --------------------------------------------------
 # OpenAI client
-def get_client():
-    api_key = os.getenv("OPENAI_API_KEY")
+# --------------------------------------------------
 
-    if not api_key:
+def get_client():
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+
+    if not api_key or api_key == "your_actual_api_key_here":
         raise HTTPException(
             status_code=503,
-            detail="OpenAI API key is not configured.",
+            detail="OpenAI API key is missing from the .env file.",
         )
 
-    return OpenAI(api_key=api_key)
+    try:
+        return OpenAI(api_key=api_key)
+    except Exception:
+        logger.exception("Could not initialise OpenAI client.")
+        raise HTTPException(
+            status_code=503,
+            detail="Could not initialise the AI service.",
+        )
 
 
-# Transcribe an MP3 or WAV audio file
+# --------------------------------------------------
+# Demo summary: no OpenAI API credits required
+# --------------------------------------------------
+
+def generate_demo_summary(transcript: str) -> str:
+    """
+    Create a simple demo output without using an AI service.
+    The output is clearly labelled as a demo.
+    """
+
+    text = transcript.strip()
+
+    if not text:
+        raise HTTPException(
+            status_code=422,
+            detail="The transcript is empty.",
+        )
+
+    sentences = [
+        part.strip()
+        for part in text.replace("\n", " ").split(".")
+        if part.strip()
+    ]
+
+    points = sentences[:5]
+
+    if not points:
+        points = [text]
+
+    bullet_points = "\n".join(
+        f"• {point}" for point in points
+    )
+
+    return (
+        "DEMO MODE — This is not an AI-generated summary.\n"
+        + bullet_points
+    )
+
+
+# --------------------------------------------------
+# Actual AI summary: requires OpenAI API credits
+# --------------------------------------------------
+
+def generate_summary(client, transcript: str) -> str:
+    response = client.chat.completions.create(
+        model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        response_format={"type": "json_object"},
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "Summarise the meeting transcript as concise bullet "
+                    "points. Include key discussion points, decisions, "
+                    "and action items when available. Do not invent "
+                    "information. Return valid JSON in this format: "
+                    '{"summary": "First point\\nSecond point"}'
+                ),
+            },
+            {
+                "role": "user",
+                "content": transcript,
+            },
+        ],
+        temperature=0.3,
+    )
+
+    content = response.choices[0].message.content
+
+    if not content:
+        raise HTTPException(
+            status_code=502,
+            detail="The AI service returned no summary.",
+        )
+
+    try:
+        data = json.loads(content)
+        validate(instance=data, schema=SUMMARY_SCHEMA)
+    except (json.JSONDecodeError, ValidationError):
+        raise HTTPException(
+            status_code=502,
+            detail="The AI returned invalid summary JSON.",
+        )
+
+    summary = data["summary"].strip()
+
+    if not summary:
+        raise HTTPException(
+            status_code=502,
+            detail="The summary was empty.",
+        )
+
+    return summary
+
+
+# --------------------------------------------------
+# MP3/WAV transcription: requires OpenAI API credits
+# --------------------------------------------------
+
 def transcribe_audio(client, audio: UploadFile) -> str:
     filename = audio.filename or ""
     extension = Path(filename).suffix.lower()
@@ -154,69 +286,16 @@ def transcribe_audio(client, audio: UploadFile) -> str:
     return transcript
 
 
-# Generate and validate the meeting summary
-def generate_summary(client, transcript: str) -> str:
-    response = client.chat.completions.create(
-        model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-        response_format={"type": "json_object"},
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "Summarise the meeting transcript as concise bullet points. "
-                    "Include key discussion points, decisions, and action items "
-                    "when available. Do not invent information. "
-                    'Return valid JSON in this format: '
-                    '{"summary": "• First point\\n• Second point"}'
-                ),
-            },
-            {
-                "role": "user",
-                "content": transcript,
-            },
-        ],
-        temperature=0.3,
-    )
+# --------------------------------------------------
+# POST /summarise
+# --------------------------------------------------
 
-    content = response.choices[0].message.content
-
-    if not content:
-        raise HTTPException(
-            status_code=502,
-            detail="The summarisation service returned no summary.",
-        )
-
-    try:
-        data = json.loads(content)
-        validate(instance=data, schema=SUMMARY_SCHEMA)
-
-    except (json.JSONDecodeError, ValidationError):
-        raise HTTPException(
-            status_code=502,
-            detail="The AI returned invalid summary JSON.",
-        )
-
-    summary = data["summary"].strip()
-
-    if not summary:
-        raise HTTPException(
-            status_code=502,
-            detail="The summary was empty.",
-        )
-
-    return summary
-
-
-# Main summarisation endpoint
 @app.post("/summarise", response_model=SummaryResponse)
 def summarise_meeting(
     transcript: str | None = Form(default=None),
     audio: UploadFile | None = File(default=None),
 ):
     transcript = transcript.strip() if transcript else None
-
-    if not transcript:
-        transcript = None
 
     if not transcript and not audio:
         raise HTTPException(
@@ -237,26 +316,29 @@ def summarise_meeting(
         )
 
     try:
-        client = get_client()
+        demo_mode = (
+            os.getenv("DEMO_MODE", "false").strip().lower() == "true"
+        )
 
+        # Audio transcription requires the real OpenAI service.
         if audio:
+            client = get_client()
             transcript = transcribe_audio(client, audio)
 
-        summary = generate_summary(client, transcript)
-
-        timestamp = datetime.now(timezone.utc).isoformat()
-
-        # Save original transcript and generated summary to SQLite
-        with get_connection() as connection:
-            cursor = connection.execute(
-                """
-                INSERT INTO meetings (transcript, summary, timestamp)
-                VALUES (?, ?, ?)
-                """,
-                (transcript, summary, timestamp),
+        if not transcript:
+            raise HTTPException(
+                status_code=422,
+                detail="No transcript was provided.",
             )
 
-            meeting_id = cursor.lastrowid
+        # Keep demo mode separate from actual AI mode.
+        if demo_mode:
+            summary = generate_demo_summary(transcript)
+        else:
+            client = get_client()
+            summary = generate_summary(client, transcript)
+
+        meeting_id, timestamp = save_meeting(transcript, summary)
 
         return SummaryResponse(
             meeting_id=meeting_id,
@@ -268,13 +350,35 @@ def summarise_meeting(
         raise
 
     except Exception:
-        logging.exception("Meeting summarisation failed.")
-
+        logger.exception("Meeting summarisation failed.")
         raise HTTPException(
             status_code=502,
-            detail="Unable to process the meeting at this time.",
+            detail=(
+                "Unable to process the meeting. Check the server "
+                "terminal for the underlying error."
+            ),
         )
 
     finally:
         if audio:
             audio.file.close()
+
+
+# --------------------------------------------------
+# GET /meetings: view saved meetings
+# --------------------------------------------------
+
+@app.get("/meetings")
+def list_meetings():
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT id, transcript, summary, timestamp
+            FROM meetings
+            ORDER BY id DESC
+            """
+        ).fetchall()
+
+    return {
+        "meetings": [dict(row) for row in rows]
+    }

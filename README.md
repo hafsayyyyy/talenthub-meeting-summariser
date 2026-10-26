@@ -7,23 +7,23 @@ A FastAPI application that summarises meeting transcripts, optionally transcribe
 - FastAPI REST API
 - `POST /summarise` accepts transcript text or an MP3/WAV audio file
 - OpenAI-powered meeting summaries in bullet-point format
-- JSON Schema validation for generated summaries
-- SQLite storage for original transcripts, summaries, and timestamps
-- Response includes `meeting_id`, `summary`, and `timestamp`
+- Optional demo mode for testing without OpenAI API credits
+- JSON Schema validation for AI-generated summaries
+- SQLite storage for transcripts, summaries, and timestamps
+- `GET /meetings` lists saved meetings
+- `GET /health` checks API health
 - Interactive API documentation at `/docs`
 - Automated tests using pytest
 
 ## Requirements
 
 - Python 3.11 or compatible version
-- An OpenAI API key for real AI summarisation and audio transcription
+- OpenAI API credits for actual AI summarisation and audio transcription
 
 ## Installation
 
 1. Clone the repository and open its folder.
 2. Create and activate a virtual environment:
-
-   **Windows PowerShell**
 
    ```powershell
    python -m venv .venv
@@ -36,13 +36,15 @@ A FastAPI application that summarises meeting transcripts, optionally transcribe
    python -m pip install -r requirements.txt
    ```
 
-4. Create a `.env` file in the project root and add your API key:
+4. Create a `.env` file in the project root:
 
    ```text
    OPENAI_API_KEY=your_openai_api_key
+   OPENAI_MODEL=gpt-4o-mini
+   DEMO_MODE=true
    ```
 
-   Never commit `.env` or share your API key publicly.
+Never commit `.env` or share your API key publicly.
 
 ## Run the API
 
@@ -50,29 +52,43 @@ A FastAPI application that summarises meeting transcripts, optionally transcribe
 python -m uvicorn app:app --reload
 ```
 
-Open `http://127.0.0.1:8000/docs` in a browser to explore and test the endpoints.
+Open the following URLs in your browser:
+
+- Dashboard: `http://127.0.0.1:8000/`
+- API documentation: `http://127.0.0.1:8000/docs`
+- Health check: `http://127.0.0.1:8000/health`
+- Saved meetings: `http://127.0.0.1:8000/meetings`
 
 ## API Endpoints
 
-- `GET /` — Home endpoint
+- `GET /` — Dashboard
 - `GET /health` — Health check
-- `POST /summarise` — Summarises a transcript or uploaded MP3/WAV audio file
+- `POST /summarise` — Summarises transcript text or uploaded audio
+- `GET /meetings` — Returns saved meetings from SQLite
 
-The summarisation endpoint accepts multipart form data. Supply either `transcript` text or an `audio` file.
+The `/summarise` endpoint accepts multipart form data. Provide either the `transcript` field or an `audio` file, not both.
 
-A successful response contains:
+A successful response looks like this:
 
 ```json
 {
   "meeting_id": 1,
-  "summary": "- First key point\n- Second key point",
+  "summary": "Example meeting summary",
   "timestamp": "UTC timestamp"
 }
 ```
 
+## Demo Mode
+
+Set `DEMO_MODE=true` in `.env` to test transcript submissions without calling the OpenAI API for summarisation.
+
+Demo Mode produces a simple, clearly labelled demonstration output. It is not an AI-generated summary. Text transcript testing works without OpenAI API credits.
+
+MP3/WAV transcription still requires the OpenAI API. To use actual AI summarisation, set `DEMO_MODE=false` and configure an API key with sufficient credits.
+
 ## Database
 
-The application creates an SQLite database named `talenthub.db` by default. It stores each original transcript, generated summary, and timestamp.
+The application creates `talenthub.db` in the project directory by default. Each saved meeting includes its original transcript, summary, and timestamp.
 
 Set `DATABASE_PATH` in the environment to use a different database path.
 
@@ -82,8 +98,10 @@ Set `DATABASE_PATH` in the environment to use a different database path.
 python -m pytest -q
 ```
 
-The automated tests use a mocked summary for the successful summarisation test, so the test suite can run without making a real OpenAI API request.
+The successful summarisation test uses a mocked summary, so it does not require a real OpenAI API request.
 
 ## API Key and Costs
 
-A valid OpenAI API key with appropriate API access is required for real summarisation and audio transcription. API usage may incur charges. Do not put your API key in source code or commit it to GitHub.
+Actual OpenAI summarisation and audio transcription require API access and sufficient credits. API usage may incur charges. A ChatGPT subscription does not automatically provide OpenAI API credits.
+
+Never put your API key in source code or commit it to GitHub.

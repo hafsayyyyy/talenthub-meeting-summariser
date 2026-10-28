@@ -6,3 +6,4 @@ __pycache__/
 talenthub.db
 test_meetings.db
 app_backup.py
+app_before_batch.py

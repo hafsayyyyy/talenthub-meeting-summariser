@@ -7,3 +7,5 @@ python-dotenv
 jsonschema
 httpx
 pytest
+
+pandas

@@ -5,6 +5,11 @@ import os
 import sqlite3
 import urllib.error
 import urllib.request
+import io
+import zipfile
+
+import pandas as pd
+from fastapi.responses import StreamingResponse
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -41,11 +46,10 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama2")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-
 app = FastAPI(
     title="TalentHub Meeting Summariser API",
     description="API for summarising meeting transcripts using local AI.",
-    version="1.1.0",
+    version="1.2.0",
 )
 
 app.mount(
@@ -155,12 +159,12 @@ def health():
             "model": OLLAMA_MODEL,
         }
 
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
         logger.exception("Database health check failed.")
         raise HTTPException(
             status_code=503,
             detail="Database connection failed.",
-        )
+        ) from exc
 
 
 # --------------------------------------------------
@@ -191,7 +195,7 @@ def get_client():
 
 
 # --------------------------------------------------
-# Demo summary (optional)
+# Demo summary
 # --------------------------------------------------
 
 def generate_demo_summary(transcript: str) -> str:
@@ -403,7 +407,6 @@ def summarise_meeting(
         )
 
         if audio:
-            # Audio still requires OpenAI Whisper.
             client = get_client()
             transcript = transcribe_audio(client, audio)
 
@@ -416,7 +419,6 @@ def summarise_meeting(
         if demo_mode:
             summary = generate_demo_summary(transcript)
         else:
-            # Text summaries use local Ollama; no API key is needed.
             summary = generate_summary(None, transcript)
 
         meeting_id, timestamp = save_meeting(
@@ -476,3 +478,177 @@ def list_meetings():
             status_code=500,
             detail="Could not retrieve meetings from the database.",
         ) from exc
+
+
+# --------------------------------------------------
+# POST /batch - Batch CSV summarisation
+# --------------------------------------------------
+
+@app.post("/batch")
+async def batch_summarise(file: UploadFile = File(...)):
+    """
+    Accept a CSV containing a 'transcript' column and return a ZIP file
+    containing individual JSON summaries plus combined JSON and CSV results.
+    Successful summaries are also saved to the existing SQLite database.
+    """
+
+    filename = file.filename or ""
+
+    if not filename.lower().endswith(".csv"):
+        raise HTTPException(
+            status_code=400,
+            detail="Please upload a CSV file.",
+        )
+
+    try:
+        raw_data = await file.read()
+
+        if not raw_data:
+            raise HTTPException(
+                status_code=400,
+                detail="The uploaded CSV file is empty.",
+            )
+
+        try:
+            dataframe = pd.read_csv(io.BytesIO(raw_data))
+        except Exception as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="Could not read the CSV file. Please check its format.",
+            ) from exc
+
+        # Allow spaces and capitalisation in column names.
+        dataframe.columns = [
+            str(column).strip().lower()
+            for column in dataframe.columns
+        ]
+
+        if "transcript" not in dataframe.columns:
+            raise HTTPException(
+                status_code=400,
+                detail="CSV must contain a 'transcript' column.",
+            )
+
+        if dataframe.empty:
+            raise HTTPException(
+                status_code=400,
+                detail="The CSV contains no meeting rows.",
+            )
+
+        demo_mode = (
+            os.getenv("DEMO_MODE", "false").strip().lower() == "true"
+        )
+
+        results = []
+
+        for index, row in dataframe.iterrows():
+            raw_transcript = row.get("transcript")
+
+            if pd.isna(raw_transcript):
+                transcript = ""
+            else:
+                transcript = str(raw_transcript).strip()
+
+            result = {
+                "row": int(index) + 1,
+                "meeting_id": None,
+                "transcript": transcript,
+                "summary": "",
+                "timestamp": None,
+                "error": None,
+            }
+
+            if not transcript:
+                result["error"] = "Transcript is empty."
+                results.append(result)
+                continue
+
+            try:
+                if demo_mode:
+                    summary = generate_demo_summary(transcript)
+                else:
+                    summary = generate_summary(None, transcript)
+
+                meeting_id, timestamp = save_meeting(
+                    transcript,
+                    summary,
+                )
+
+                result["meeting_id"] = meeting_id
+                result["summary"] = summary
+                result["timestamp"] = timestamp
+
+            except HTTPException as exc:
+                result["error"] = str(exc.detail)
+
+            except Exception:
+                logger.exception(
+                    "Batch summarisation failed for CSV row %s.",
+                    index + 1,
+                )
+                result["error"] = "Could not summarise this transcript."
+
+            results.append(result)
+
+        output = io.BytesIO()
+
+        csv_results = [
+            {
+                "row": item["row"],
+                "meeting_id": item["meeting_id"],
+                "summary": item["summary"],
+                "timestamp": item["timestamp"],
+                "error": item["error"],
+            }
+            for item in results
+        ]
+
+        csv_output = io.StringIO()
+        pd.DataFrame(csv_results).to_csv(
+            csv_output,
+            index=False,
+        )
+
+        with zipfile.ZipFile(
+            output,
+            mode="w",
+            compression=zipfile.ZIP_DEFLATED,
+        ) as archive:
+
+            archive.writestr(
+                "batch_results.json",
+                json.dumps(
+                    results,
+                    indent=2,
+                    ensure_ascii=False,
+                ),
+            )
+
+            archive.writestr(
+                "batch_results.csv",
+                csv_output.getvalue(),
+            )
+
+            for item in results:
+                archive.writestr(
+                    f"summaries/meeting_{item['row']:03d}.json",
+                    json.dumps(
+                        item,
+                        indent=2,
+                        ensure_ascii=False,
+                    ),
+                )
+
+        output.seek(0)
+
+        return StreamingResponse(
+            output,
+            media_type="application/zip",
+            headers={
+                "Content-Disposition":
+                    'attachment; filename="batch_results.zip"',
+            },
+        )
+
+    finally:
+        await file.close()

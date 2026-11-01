@@ -176,3 +176,66 @@ The application may also create local files such as `.env` and `talenthub.db`. T
 - Do not upload confidential recruitment transcripts without appropriate permission.
 - Review AI-generated summaries for accuracy before relying on them.
 - Avoid committing local database files, downloaded batch archives, or backup files unless the assignment specifically requires them.
+
+## Deployment on Render
+
+The project includes a `render.yaml` Blueprint configuration for deployment on Render.
+
+### Deployment Steps
+
+1. Push the project code to the GitHub repository.
+2. Sign in to [Render](https://render.com/).
+3. Select **New +** and choose **Blueprint**.
+4. Connect your GitHub account if required.
+5. Select the `talenthub-meeting-summariser` repository.
+6. Render will detect the `render.yaml` file.
+7. Review the service configuration and deploy the application.
+8. Wait for the deployment to finish successfully.
+9. Open the generated HTTPS service URL.
+
+### Environment Variables
+
+The Render Blueprint configures these environment variables:
+
+| Variable | Purpose |
+|---|---|
+| `PYTHON_VERSION` | Python runtime version |
+| `DEMO_MODE` | Enables demonstration mode |
+| `DATABASE_PATH` | SQLite database location |
+| `OPENAI_API_KEY` | Optional secret for OpenAI features |
+
+Never put an actual API key in `render.yaml`, README, or GitHub. Configure it through Render's environment variable settings as a secret.
+
+### Testing the Deployed Application
+
+Replace the example URL below with the actual Render service URL.
+
+- **Dashboard:** `https://YOUR-SERVICE.onrender.com/`
+- **Health check:** `https://YOUR-SERVICE.onrender.com/health`
+- **Swagger documentation:** `https://YOUR-SERVICE.onrender.com/docs`
+- **Saved meetings:** `https://YOUR-SERVICE.onrender.com/meetings`
+
+Test the following:
+
+1. Open the dashboard.
+2. Submit a sample meeting transcript.
+3. Verify that a demonstration summary is returned.
+4. Check that the meeting is saved.
+5. Test the API through Swagger.
+6. Test the batch CSV endpoint.
+
+### Deployment Limitations
+
+- The current deployment uses `DEMO_MODE=true`. Its demonstration summaries are not AI-generated.
+- Local Ollama is not automatically available on Render. Real AI summarisation requires a separately configured hosted AI service.
+- OpenAI audio transcription requires a working OpenAI API key and sufficient API credits.
+- The configured SQLite database path uses temporary storage. Data may be lost when the Render service restarts or is redeployed.
+- Free Render services may spin down when inactive, so the first request after inactivity can take longer.
+
+### Production AI Configuration
+
+When OpenAI API billing is available, configure a valid `OPENAI_API_KEY` in Render's environment settings and update the application to use OpenAI for text summarisation. Then test real AI summaries before declaring production AI functionality complete.
+
+## License
+
+This project is licensed under the MIT License. See the `LICENSE` file for details.

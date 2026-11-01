@@ -1,26 +1,23 @@
-
+﻿
+import io
 import json
 import logging
 import os
 import sqlite3
 import urllib.error
 import urllib.request
-import io
 import zipfile
-
-import pandas as pd
-from fastapi.responses import StreamingResponse
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
+import pandas as pd
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from jsonschema import validate, ValidationError
+from jsonschema import ValidationError, validate
 from openai import OpenAI
 from pydantic import BaseModel
-
 
 # --------------------------------------------------
 # Configuration
@@ -110,7 +107,7 @@ initialise_database()
 
 
 def save_meeting(transcript: str, summary: str):
-    timestamp = datetime.now(timezone.utc).isoformat()
+    timestamp = datetime.now(UTC).isoformat()
 
     with get_connection() as connection:
         cursor = connection.execute(
@@ -379,7 +376,7 @@ def transcribe_audio(client, audio: UploadFile) -> str:
 @app.post("/summarise", response_model=SummaryResponse)
 def summarise_meeting(
     transcript: str | None = Form(default=None),
-    audio: UploadFile | None = File(default=None),
+    audio: UploadFile | None = File(default=None),  # noqa: B008
 ):
     transcript = transcript.strip() if transcript else None
 
@@ -485,7 +482,7 @@ def list_meetings():
 # --------------------------------------------------
 
 @app.post("/batch")
-async def batch_summarise(file: UploadFile = File(...)):
+async def batch_summarise(file: UploadFile = File(...)):  # noqa: B008
     """
     Accept a CSV containing a 'transcript' column and return a ZIP file
     containing individual JSON summaries plus combined JSON and CSV results.
@@ -652,3 +649,4 @@ async def batch_summarise(file: UploadFile = File(...)):
 
     finally:
         await file.close()
+

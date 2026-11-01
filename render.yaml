@@ -1,0 +1,17 @@
+﻿services:
+  - type: web
+    name: talenthub-meeting-summariser
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: DEMO_MODE
+        value: "true"
+      - key: DATABASE_PATH
+        value: /tmp/talenthub.db
+      - key: OPENAI_API_KEY
+        sync: false
